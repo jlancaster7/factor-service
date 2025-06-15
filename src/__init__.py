@@ -1,0 +1,1 @@
+"""Equity factors service package."""
