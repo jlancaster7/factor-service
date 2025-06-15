@@ -53,7 +53,7 @@ htmlcov/
 *.parquet
 *.xlsx
 *.xls
-data/
+/data/
 
 # Logs
 *.log
