@@ -1,6 +1,7 @@
 """Data loading utilities that convert Snowflake results to DataFrames."""
 import pandas as pd
 from typing import List, Dict, Any, Optional
+from decimal import Decimal
 from loguru import logger
 
 from .snowflake_connector import SnowflakeConnector
@@ -31,10 +32,36 @@ class DataLoader:
         if results:
             df = pd.DataFrame(results)
             logger.debug(f"Converted {len(results)} rows to DataFrame with columns: {df.columns.tolist()}")
+            
+            # Convert Decimal columns to float to avoid type issues
+            df = self._convert_decimal_columns(df)
+            
             return df
         else:
             logger.warning("Query returned no results")
             return pd.DataFrame()
+    
+    def _convert_decimal_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert Decimal type columns to float.
+        
+        Snowflake returns Decimal types for numeric columns, which can cause
+        issues with pandas operations. This method converts them to float.
+        
+        Args:
+            df: DataFrame to process
+            
+        Returns:
+            DataFrame with Decimal columns converted to float
+        """
+        for col in df.columns:
+            if df[col].dtype == object and len(df) > 0:
+                # Check if first non-null value is Decimal
+                non_null = df[col].dropna()
+                if not non_null.empty and isinstance(non_null.iloc[0], Decimal):
+                    logger.debug(f"Converting column '{col}' from Decimal to float")
+                    df[col] = df[col].astype(float)
+        
+        return df
     
     def load_price_data(self, symbols: List[str], start_date: str, end_date: str) -> pd.DataFrame:
         """

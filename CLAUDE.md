@@ -22,6 +22,13 @@ This is an equity factors service project. The codebase is currently being initi
 - Document the "why" behind decisions
 - Make sure to not only create unit tests, but use actual data and view actual data as you are building components and make sure the results you're getting actually make sense. Sometimes just looking at the data you can see whats wrong immediately (like everything is null).
 
+### Bug Management Principle
+- **Fix bugs immediately when discovered** - small bugs compound into bigger problems
+- **Test thoroughly after each fix** - verify the fix actually works
+- **Track down root causes** - understand why the bug happened (e.g., Snowflake returning Decimal types)
+- **Fix systematically** - if one component has an issue, check all similar components
+- **Verify fixes work end-to-end** - test the entire flow, not just the immediate fix
+
 ## Commands
 
 ### Development Setup
@@ -69,8 +76,13 @@ flake8 src tests scripts
 
 ### Build & Run
 ```bash
-# Calculate factors (once implemented)
-python scripts/calculate_factors.py
+# Calculate all factors
+python scripts/calculate_all_factors.py
+
+# Test individual factors
+python scripts/test_momentum_factor.py
+python scripts/test_book_to_market_simple.py
+python scripts/test_rsi_factor.py
 ```
 
 ## Architecture
@@ -80,10 +92,14 @@ python scripts/calculate_factors.py
 - **DataLoader**: Helper class that converts List[Dict] results to pandas DataFrames for factor calculations
 - **Config Management**: Environment-based configuration with SnowflakeConfig compatibility
 
-### Factor Framework (In Progress)
+### Factor Framework (Implemented)
 - **BaseFactor**: Abstract base class for all factor implementations
 - **FactorRegistry**: Central registry for factor discovery and management
-- **Factor Categories**: momentum, value, technical, quality
+- **Factor Categories**: momentum, value, technical
+- **Implemented Factors**:
+  - `momentum_12_1`: 12-month minus 1-month price momentum
+  - `book_to_market`: Book-to-market ratio (1/PB from market metrics)
+  - `rsi_14`: 14-day Relative Strength Index
 
 ### Database Schema
 - **STAGING.STG_FACTOR_VALUES**: Staging layer for calculated factors
@@ -98,3 +114,4 @@ As this is an equity factors service, future development should consider:
 - Performance optimization for large datasets
 - Proper error handling for market data operations
 - Security considerations for financial data
+- **Data Type Handling**: Snowflake returns Decimal types that need conversion to float for pandas operations
