@@ -28,6 +28,7 @@ This is an equity factors service project. The codebase is currently being initi
 - **Track down root causes** - understand why the bug happened (e.g., Snowflake returning Decimal types)
 - **Fix systematically** - if one component has an issue, check all similar components
 - **Verify fixes work end-to-end** - test the entire flow, not just the immediate fix
+- **Monitor factor validation** - Use FactorDataValidator to catch NaN/Inf issues early
 
 ## Commands
 

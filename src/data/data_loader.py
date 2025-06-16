@@ -36,6 +36,9 @@ class DataLoader:
             # Convert Decimal columns to float to avoid type issues
             df = self._convert_decimal_columns(df)
             
+            # Convert column names to lowercase for consistency
+            df.columns = df.columns.str.lower()
+            
             return df
         else:
             logger.warning("Query returned no results")
@@ -141,6 +144,51 @@ class DataLoader:
         
         # Build parameters
         params = {'as_of_date': as_of_date}
+        for i, symbol in enumerate(symbols):
+            params[f'symbol_{i}'] = symbol
+        
+        return self.query_to_dataframe(query, params)
+    
+    def load_market_metrics(self, symbols: List[str], date: str) -> pd.DataFrame:
+        """
+        Load market metrics data for given symbols on a specific date.
+        
+        Args:
+            symbols: List of stock symbols
+            date: Date to load metrics for (YYYY-MM-DD)
+            
+        Returns:
+            DataFrame with market metrics including P/B ratio
+        """
+        query = """
+        SELECT 
+            c.symbol,
+            d.date,
+            m.close_price,
+            m.market_cap,
+            m.enterprise_value,
+            m.pe_ratio,
+            m.pe_ratio_ttm,
+            m.pb_ratio,
+            m.ps_ratio,
+            m.ps_ratio_ttm,
+            m.ev_to_revenue,
+            m.ev_to_revenue_ttm,
+            m.dividend_yield
+        FROM ANALYTICS.FACT_MARKET_METRICS m
+        JOIN ANALYTICS.DIM_COMPANY c ON m.company_key = c.company_key
+        JOIN ANALYTICS.DIM_DATE d ON m.date_key = d.date_key
+        WHERE c.symbol IN ({placeholders})
+          AND d.date = %(date)s
+        ORDER BY c.symbol
+        """
+        
+        # Create placeholders for IN clause
+        placeholders = ','.join([f"%(symbol_{i})s" for i in range(len(symbols))])
+        query = query.format(placeholders=placeholders)
+        
+        # Build parameters
+        params = {'date': date}
         for i, symbol in enumerate(symbols):
             params[f'symbol_{i}'] = symbol
         

@@ -14,6 +14,7 @@ class Config:
     
     # Application settings
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    batch_size: int = int(os.getenv("BATCH_SIZE", "1000"))
     
     # For backward compatibility
     snowflake_account: str = os.getenv("SNOWFLAKE_ACCOUNT", "")
