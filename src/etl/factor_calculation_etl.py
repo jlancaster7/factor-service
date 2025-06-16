@@ -85,13 +85,13 @@ class FactorCalculationETL(BaseETL):
         self.result.metadata['end_date'] = end_date
         
         # Determine lookback period based on registered factors
-        max_lookback = self._get_max_lookback_days()
-        logger.info(f"Using maximum lookback of {max_lookback} days for factor calculations")
+        max_lookback_calendar_days = self._get_max_lookback_days()
+        logger.info(f"Using lookback of {max_lookback_calendar_days} calendar days to ensure sufficient trading days")
         
         # Calculate start date for lookback period
         from datetime import datetime, timedelta
         end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-        start_date_obj = end_date_obj - timedelta(days=max_lookback)
+        start_date_obj = end_date_obj - timedelta(days=max_lookback_calendar_days)
         lookback_start_date = start_date_obj.strftime("%Y-%m-%d")
         
         # Load price data with lookback using existing method
@@ -337,7 +337,7 @@ class FactorCalculationETL(BaseETL):
     
     def _get_max_lookback_days(self) -> int:
         """Determine maximum lookback period from registered factors"""
-        max_lookback = 252  # Default to 1 year
+        max_lookback = 252  # Default to 1 year of trading days
         
         for factor_name in FactorRegistry.list_factors():
             try:
@@ -349,7 +349,12 @@ class FactorCalculationETL(BaseETL):
             except:
                 pass
         
-        return max_lookback
+        # Convert trading days to calendar days (approximate)
+        # 252 trading days ≈ 365 calendar days
+        # Add some buffer to be safe
+        calendar_days = int(max_lookback * 1.5)
+        
+        return calendar_days
     
     def _log_calculation_summary(self):
         """Log summary to ANALYTICS.FACTOR_CALCULATION_LOG"""
