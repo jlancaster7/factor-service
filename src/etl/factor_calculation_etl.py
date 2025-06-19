@@ -1,6 +1,6 @@
 """
-Factor Calculation ETL Pipeline
-Inherits from BaseETL to calculate equity factors and load to staging
+Factor Calculation ETL Pipeline V2 - Refactored for fact tables
+Inherits from BaseETL to calculate equity factors and load to fact tables
 """
 
 from typing import Dict, List, Any, Optional, Tuple
@@ -22,7 +22,7 @@ import src.factors.technical
 
 
 class FactorCalculationETL(BaseETL):
-    """ETL pipeline for calculating and loading equity factors"""
+    """ETL pipeline for calculating and loading equity factors to fact tables"""
     
     def __init__(self, config: Config):
         """
@@ -36,7 +36,7 @@ class FactorCalculationETL(BaseETL):
         snowflake_connector.connect()  # Ensure connection is established
         
         super().__init__(
-            job_name="factor_calculation_etl",
+            job_name="factor_calculation_etl_v2",
             snowflake_connector=snowflake_connector,
             fmp_client=None,  # Not needed for factors
             batch_size=config.batch_size or 1000,
@@ -49,6 +49,11 @@ class FactorCalculationETL(BaseETL):
         self.data_loader = DataLoader(snowflake_connector)
         self.calculation_date = None
         self.symbols = None
+        
+        # Cache for dimension lookups
+        self._company_key_cache = {}
+        self._date_key_cache = {}
+        self._factor_key_cache = {}
         
     def extract(self, symbols: Optional[List[str]] = None, 
                 start_date: Optional[str] = None, 
@@ -78,6 +83,9 @@ class FactorCalculationETL(BaseETL):
         self.symbols = symbols
         
         logger.info(f"Extracting data for {len(symbols)} symbols from {start_date} to {end_date}")
+        
+        # Load dimension keys for the symbols and date
+        self._load_dimension_keys(symbols, end_date)
         
         # Store metadata
         self.result.metadata['symbols'] = symbols
@@ -131,13 +139,13 @@ class FactorCalculationETL(BaseETL):
             raw_data: Dictionary with price, fundamental, and market DataFrames
             
         Returns:
-            Dictionary with 'staging' key containing factor values
+            Dictionary with 'staging' and 'fact_raw' keys containing factor values
         """
         price_data = raw_data.get('price', pd.DataFrame())
         fundamental_data = raw_data.get('fundamental', pd.DataFrame())
         market_data = raw_data.get('market', pd.DataFrame())
         
-        staging_records = []
+        fact_raw_records = []  # Only fact table now
         factor_stats = {}
         
         # Get all registered factors
@@ -177,15 +185,27 @@ class FactorCalculationETL(BaseETL):
                     'std': diagnostics['std']
                 }
                 
-                # Convert to staging records
+                # Get factor key
+                factor_key = self._factor_key_cache.get(factor_name)
+                if not factor_key:
+                    logger.warning(f"No factor key found for {factor_name}")
+                    continue
+                
+                # Convert to records (fact table only, no more staging)
                 for symbol, value in factor_values.items():
                     if pd.notna(value) and not np.isinf(value):
-                        staging_records.append({
-                            'symbol': symbol,
-                            'date': self.calculation_date,
-                            'factor_name': factor_name,
-                            'factor_value': float(value)
-                        })
+                        company_key = self._company_key_cache.get(symbol)
+                        date_key = self._date_key_cache.get(self.calculation_date)
+                        
+                        if company_key and date_key:
+                            fact_raw_records.append({
+                                'company_key': company_key,
+                                'date_key': date_key,
+                                'factor_key': factor_key,
+                                'factor_value': float(value)
+                            })
+                        else:
+                            logger.warning(f"Missing dimension keys for {symbol} on {self.calculation_date}")
                 
                 logger.info(f"Calculated {factor_name}: "
                            f"{len(factor_values)} values, "
@@ -208,55 +228,60 @@ class FactorCalculationETL(BaseETL):
         
         # Store factor statistics in metadata
         self.result.metadata['factor_stats'] = factor_stats
-        self.result.metadata['total_factor_values'] = len(staging_records)
+        self.result.metadata['total_fact_values'] = len(fact_raw_records)
         
-        logger.info(f"Transformed {len(staging_records)} factor values across all factors")
+        logger.info(f"Transformed {len(fact_raw_records)} fact records")
         
-        return {'staging': staging_records}
+        return {
+            'fact_raw': fact_raw_records
+        }
     
     def load(self, transformed_data: Dict[str, List[Dict[str, Any]]]) -> int:
         """
-        Load factor values to staging table using MERGE
+        Load factor values to fact table only
         
         Args:
-            transformed_data: Dictionary with staging records
+            transformed_data: Dictionary with fact_raw records
             
         Returns:
             Number of records loaded
         """
-        staging_data = transformed_data.get('staging', [])
+        fact_data = transformed_data.get('fact_raw', [])
         
-        if not staging_data:
-            logger.warning("No staging data to load")
+        if not fact_data:
+            logger.warning("No data to load")
             return 0
         
         # Add calculation timestamp
         current_timestamp = datetime.now(timezone.utc)
-        for record in staging_data:
-            record['calculation_timestamp'] = current_timestamp
         
-        logger.info(f"Loading {len(staging_data)} records to STAGING.STG_FACTOR_VALUES")
-        
-        # Use MERGE for idempotent loads
-        merge_keys = ['symbol', 'date', 'factor_name']
-        update_columns = ['factor_value', 'calculation_timestamp']
-        
+        # Load to fact table only
+        if fact_data:
+            for record in fact_data:
+                record['calculation_timestamp'] = current_timestamp
+            
+            logger.info(f"Loading {len(fact_data)} records to ANALYTICS.FACT_FACTOR_RAW")
+            
         try:
+            # Use MERGE for idempotent loads
+            merge_keys = ['company_key', 'date_key', 'factor_key']
+            update_columns = ['factor_value', 'calculation_timestamp']
+            
             records_merged = self.snowflake.merge(
-                table="STAGING.STG_FACTOR_VALUES",
-                data=staging_data,
+                table="ANALYTICS.FACT_FACTOR_RAW",
+                data=fact_data,
                 merge_keys=merge_keys,
                 update_columns=update_columns
             )
             
-            logger.info(f"Successfully merged {records_merged} records to staging")
-            return len(staging_data)
+            logger.info(f"Successfully merged {records_merged} records to fact table")
+            return len(fact_data)
             
         except Exception as e:
-            error_msg = f"Failed to load staging data: {str(e)}"
+            error_msg = f"Failed to load fact data: {str(e)}"
             logger.error(error_msg)
             self.result.errors.append(error_msg)
-            raise
+            return 0
     
     def run(self, symbols: Optional[List[str]] = None,
             start_date: Optional[str] = None,
@@ -285,9 +310,9 @@ class FactorCalculationETL(BaseETL):
             
             # Transform - calculate factors
             transformed_data = self.transform(raw_data)
-            self.result.records_transformed = len(transformed_data.get('staging', []))
+            self.result.records_transformed = len(transformed_data.get('fact_raw', []))
             
-            # Load to staging
+            # Load to fact table only
             records_loaded = self.load(transformed_data)
             self.result.records_loaded = records_loaded
             
@@ -319,6 +344,47 @@ class FactorCalculationETL(BaseETL):
             self.result.end_time = datetime.now(timezone.utc)
             duration = (self.result.end_time - self.result.start_time).total_seconds()
             logger.info(f"ETL completed in {duration:.2f} seconds with status: {self.result.status}")
+    
+    def _load_dimension_keys(self, symbols: List[str], date: str):
+        """Load dimension keys for symbols and date"""
+        # Load company keys
+        query = """
+        SELECT symbol, company_key 
+        FROM ANALYTICS.DIM_COMPANY 
+        WHERE symbol IN ({placeholders})
+          AND is_current = TRUE
+        """
+        placeholders = ','.join([f"%(symbol_{i})s" for i in range(len(symbols))])
+        query = query.format(placeholders=placeholders)
+        
+        params = {}
+        for i, symbol in enumerate(symbols):
+            params[f'symbol_{i}'] = symbol
+        
+        results = self.snowflake.fetch_all(query, params)
+        self._company_key_cache = {row['SYMBOL']: row['COMPANY_KEY'] for row in results}
+        
+        # Load date key
+        date_query = """
+        SELECT date, date_key 
+        FROM ANALYTICS.DIM_DATE 
+        WHERE date = %(date)s
+        """
+        results = self.snowflake.fetch_all(date_query, {'date': date})
+        if results:
+            self._date_key_cache[date] = results[0]['DATE_KEY']
+        
+        # Load factor keys
+        factor_query = """
+        SELECT factor_name, factor_key 
+        FROM ANALYTICS.DIM_FACTOR 
+        WHERE is_active = TRUE
+        """
+        results = self.snowflake.fetch_all(factor_query)
+        self._factor_key_cache = {row['FACTOR_NAME']: row['FACTOR_KEY'] for row in results}
+        
+        logger.info(f"Loaded dimension keys: {len(self._company_key_cache)} companies, "
+                   f"1 date, {len(self._factor_key_cache)} factors")
     
     def _get_active_symbols(self, as_of_date: str) -> List[str]:
         """Get list of active symbols to process"""

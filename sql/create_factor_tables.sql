@@ -1,15 +1,5 @@
 -- Create factor framework tables
 
--- Staging layer for calculated factors
-CREATE TABLE IF NOT EXISTS STAGING.STG_FACTOR_VALUES (
-    symbol VARCHAR(10),
-    date DATE,
-    factor_name VARCHAR(100),
-    factor_value FLOAT,
-    calculation_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (symbol, date, factor_name)
-);
-
 -- Analytics layer - Factor dimension
 CREATE TABLE IF NOT EXISTS ANALYTICS.DIM_FACTOR (
     factor_key INTEGER IDENTITY(1,1),
@@ -26,22 +16,39 @@ CREATE TABLE IF NOT EXISTS ANALYTICS.DIM_FACTOR (
     PRIMARY KEY (factor_key)
 );
 
--- Analytics layer - Daily factor values
-CREATE TABLE IF NOT EXISTS ANALYTICS.FACT_DAILY_FACTORS (
-    factor_value_key INTEGER IDENTITY(1,1),
-    company_key INTEGER,
-    date_key INTEGER,
-    factor_key INTEGER,
+-- Raw factor values with proper dimension keys
+CREATE TABLE IF NOT EXISTS ANALYTICS.FACT_FACTOR_RAW (
+    factor_raw_key INTEGER IDENTITY(1,1),
+    company_key INTEGER NOT NULL,
+    date_key INTEGER NOT NULL,
+    factor_key INTEGER NOT NULL,
+    factor_value FLOAT,
+    calculation_timestamp TIMESTAMP_NTZ,
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (factor_raw_key),
+    FOREIGN KEY (company_key) REFERENCES ANALYTICS.DIM_COMPANY(company_key),
+    FOREIGN KEY (date_key) REFERENCES ANALYTICS.DIM_DATE(date_key),
+    FOREIGN KEY (factor_key) REFERENCES ANALYTICS.DIM_FACTOR(factor_key),
+    UNIQUE (company_key, date_key, factor_key)
+);
+
+-- Analytics layer with statistical calculations
+CREATE TABLE IF NOT EXISTS ANALYTICS.FACT_FACTOR_ANALYTICS (
+    factor_analytics_key INTEGER IDENTITY(1,1),
+    company_key INTEGER NOT NULL,
+    date_key INTEGER NOT NULL,
+    factor_key INTEGER NOT NULL,
     raw_value FLOAT,
     z_score FLOAT,
     percentile_rank FLOAT,
     sector_z_score FLOAT,
     sector_percentile_rank FLOAT,
-    calculation_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    PRIMARY KEY (factor_value_key),
-    FOREIGN KEY (company_key) REFERENCES DIM_COMPANY(company_key),
-    FOREIGN KEY (date_key) REFERENCES DIM_DATE(date_key),
-    FOREIGN KEY (factor_key) REFERENCES DIM_FACTOR(factor_key),
+    calculation_timestamp TIMESTAMP_NTZ,
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (factor_analytics_key),
+    FOREIGN KEY (company_key) REFERENCES ANALYTICS.DIM_COMPANY(company_key),
+    FOREIGN KEY (date_key) REFERENCES ANALYTICS.DIM_DATE(date_key),
+    FOREIGN KEY (factor_key) REFERENCES ANALYTICS.DIM_FACTOR(factor_key),
     UNIQUE (company_key, date_key, factor_key)
 );
 
@@ -73,3 +80,7 @@ ON target.factor_name = source.factor_name
 WHEN NOT MATCHED THEN
     INSERT (factor_name, factor_category, factor_subcategory, calculation_frequency, lookback_days, description, formula)
     VALUES (source.factor_name, source.factor_category, source.factor_subcategory, source.calculation_frequency, source.lookback_days, source.description, source.formula);
+
+-- Note: Snowflake uses automatic clustering and micro-partitioning
+-- Traditional indexes are not needed/supported
+-- Foreign keys provide query optimization hints

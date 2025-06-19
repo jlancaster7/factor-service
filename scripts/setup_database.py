@@ -31,7 +31,7 @@ def main():
     loader = DataLoader(connector)
     
     # Read SQL file
-    sql_file = Path('sql/01_create_factor_tables.sql')
+    sql_file = Path('sql/create_factor_tables.sql')
     logger.info(f"Reading SQL from {sql_file}")
     
     with open(sql_file, 'r') as f:
@@ -65,23 +65,12 @@ def main():
     SELECT TABLE_NAME, ROW_COUNT
     FROM INFORMATION_SCHEMA.TABLES
     WHERE TABLE_SCHEMA = 'ANALYTICS'
-    AND TABLE_NAME IN ('DIM_FACTOR', 'FACT_DAILY_FACTORS', 'FACTOR_CALCULATION_LOG')
+    AND TABLE_NAME IN ('DIM_FACTOR', 'FACT_FACTOR_RAW', 'FACT_FACTOR_ANALYTICS', 'FACTOR_CALCULATION_LOG')
     ORDER BY TABLE_NAME
     """
     
     analytics_tables = loader.query_to_dataframe(analytics_query)
     logger.info(f"\nAnalytics tables:\n{analytics_tables}")
-    
-    # Check STAGING schema tables
-    staging_query = """
-    SELECT TABLE_NAME, ROW_COUNT
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_SCHEMA = 'STAGING'
-    AND TABLE_NAME = 'STG_FACTOR_VALUES'
-    """
-    
-    staging_tables = loader.query_to_dataframe(staging_query)
-    logger.info(f"\nStaging tables:\n{staging_tables}")
     
     # Check factor dimension entries
     factor_query = "SELECT factor_name, factor_category, lookback_days FROM ANALYTICS.DIM_FACTOR ORDER BY factor_name"
