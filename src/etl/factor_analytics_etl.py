@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from src.etl.base_etl import BaseETL
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.config import Config
 
 
@@ -23,13 +23,12 @@ class FactorAnalyticsETL(BaseETL):
         Args:
             config: Application configuration object
         """
-        snowflake_config = config.get_snowflake_config()
-        snowflake_connector = SnowflakeConnector(snowflake_config)
-        snowflake_connector.connect()
+        database_connector = DatabaseConnector(config)
+        database_connector.initialize_schema()
         
         super().__init__(
             job_name="factor_analytics_etl",
-            snowflake_connector=snowflake_connector,
+            database_connector=database_connector,
             fmp_client=None,  # Not needed
             batch_size=config.batch_size or 1000,
             max_retries=3,
@@ -60,7 +59,7 @@ class FactorAnalyticsETL(BaseETL):
         WHERE d.date = %(date)s
         """
         
-        result = self.snowflake.fetch_all(check_query, {'date': calculation_date})
+        result = self.database.fetch_all(check_query, {'date': calculation_date})
         record_count = result[0]['RECORD_COUNT'] if result else 0
         
         if record_count == 0:
@@ -90,7 +89,7 @@ class FactorAnalyticsETL(BaseETL):
         ORDER BY f.factor_name, c.symbol
         """
         
-        raw_data = self.snowflake.fetch_all(query, {'date': calculation_date})
+        raw_data = self.database.fetch_all(query, {'date': calculation_date})
         
         # Store metadata
         self.result.metadata['calculation_date'] = calculation_date
@@ -114,7 +113,7 @@ class FactorAnalyticsETL(BaseETL):
             return []
         
         # Use SQL to calculate statistics efficiently
-        # This approach keeps data in Snowflake and uses optimized window functions
+        # This approach keeps data in DuckDB and uses optimized window functions
         query = """
         WITH factor_stats AS (
             -- Calculate cross-sectional statistics by factor
@@ -134,8 +133,8 @@ class FactorAnalyticsETL(BaseETL):
                     ORDER BY fr.factor_value
                 ) as percentile_rank,
                 -- Sector statistics (Phase 2 - placeholder for now)
-                NULL::FLOAT as sector_mean,
-                NULL::FLOAT as sector_std
+                NULL::DOUBLE as sector_mean,
+                NULL::DOUBLE as sector_std
             FROM ANALYTICS.FACT_FACTOR_RAW fr
             JOIN ANALYTICS.DIM_COMPANY c ON fr.company_key = c.company_key
             JOIN ANALYTICS.DIM_DATE d ON fr.date_key = d.date_key
@@ -155,15 +154,15 @@ class FactorAnalyticsETL(BaseETL):
             END as z_score,
             percentile_rank,
             -- Sector z-score (Phase 2)
-            NULL::FLOAT as sector_z_score,
+            NULL::DOUBLE as sector_z_score,
             -- Sector percentile (Phase 2)  
-            NULL::FLOAT as sector_percentile_rank,
+            NULL::DOUBLE as sector_percentile_rank,
             factor_count
         FROM factor_stats
         WHERE factor_count >= 2  -- Need at least 2 values for meaningful stats
         """
         
-        analytics_data = self.snowflake.fetch_all(query, {'date': self.processing_date})
+        analytics_data = self.database.fetch_all(query, {'date': self.processing_date})
         
         # Track statistics by factor
         factor_stats = {}
@@ -218,7 +217,7 @@ class FactorAnalyticsETL(BaseETL):
         # Use manual transaction for atomic DELETE + INSERT
         try:
             # Begin transaction
-            self.snowflake.execute("BEGIN")
+            self.database.execute("BEGIN")
             
             try:
                 # Delete existing analytics for this date
@@ -231,7 +230,7 @@ class FactorAnalyticsETL(BaseETL):
                 )
                 """
                 
-                deleted = self.snowflake.execute(delete_query, {'date': self.processing_date})
+                deleted = self.database.execute(delete_query, {'date': self.processing_date})
                 logger.info(f"Deleted {deleted} existing analytics records for {self.processing_date}")
                 
                 # Prepare data for bulk insert
@@ -250,19 +249,19 @@ class FactorAnalyticsETL(BaseETL):
                     })
                 
                 # Bulk insert new analytics data
-                self.snowflake.bulk_insert(
+                self.database.bulk_insert(
                     "ANALYTICS.FACT_FACTOR_ANALYTICS",
                     insert_data
                 )
                 
                 # Commit transaction
-                self.snowflake.execute("COMMIT")
+                self.database.execute("COMMIT")
                 
                 logger.info(f"Successfully loaded {len(insert_data)} analytics records")
                 
             except Exception as e:
                 # Rollback on error
-                self.snowflake.execute("ROLLBACK")
+                self.database.execute("ROLLBACK")
                 raise
                 
         except Exception as e:
@@ -283,6 +282,7 @@ class FactorAnalyticsETL(BaseETL):
         Returns:
             Result dictionary with status and statistics
         """
+        self.reset_result()
         logger.info(f"Starting factor analytics ETL for {calculation_date}")
         
         try:
@@ -296,7 +296,11 @@ class FactorAnalyticsETL(BaseETL):
                 return {
                     'status': 'SUCCESS',
                     'message': f'No raw factor data found for {calculation_date}',
-                    'records_processed': 0
+                    'records_extracted': 0,
+                    'records_transformed': 0,
+                    'records_loaded': 0,
+                    'errors': [],
+                    'factor_stats': {}
                 }
             
             # Transform - calculate statistics
@@ -354,7 +358,7 @@ class FactorAnalyticsETL(BaseETL):
         ORDER BY d.date
         """
         
-        dates = self.snowflake.fetch_all(query, {
+        dates = self.database.fetch_all(query, {
             'start_date': start_date,
             'end_date': end_date
         })

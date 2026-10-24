@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, '.')
 
 from src.config import Config
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.data.data_loader import DataLoader
 
 
@@ -14,9 +14,8 @@ def main():
     config = Config()
     config.validate()
     
-    # Connect to Snowflake
-    snowflake_config = config.get_snowflake_config()
-    connector = SnowflakeConnector(snowflake_config)
+    # Connect to the local database
+    connector = DatabaseConnector(config)
     connector.connect()
     loader = DataLoader(connector)
     
@@ -27,9 +26,7 @@ def main():
     SELECT 
         TABLE_SCHEMA,
         TABLE_NAME,
-        TABLE_TYPE,
-        ROW_COUNT,
-        CREATED
+        TABLE_TYPE
     FROM INFORMATION_SCHEMA.TABLES
     WHERE (TABLE_NAME LIKE '%FACTOR%' 
            OR TABLE_NAME = 'STG_FACTOR_VALUES')
@@ -66,30 +63,6 @@ def main():
         except Exception as e:
             print(f"{full_name:40} | Error: {str(e)}")
     
-    
-    # Check dependencies
-    print("\n=== FACT_DAILY_FACTORS DEPENDENCIES ===\n")
-    
-    # Check if any views or procedures reference FACT_DAILY_FACTORS
-    dep_query = """
-    SELECT 
-        REFERENCED_OBJECT_NAME,
-        REFERENCING_OBJECT_TYPE,
-        REFERENCING_OBJECT_NAME
-    FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES
-    WHERE REFERENCED_OBJECT_NAME = 'FACT_DAILY_FACTORS'
-    AND REFERENCED_SCHEMA_NAME = 'ANALYTICS'
-    """
-    
-    try:
-        deps = loader.query_to_dataframe(dep_query)
-        if len(deps) > 0:
-            print("Dependencies found:")
-            print(deps.to_string(index=False))
-        else:
-            print("No dependencies found on FACT_DAILY_FACTORS")
-    except:
-        print("Could not query object dependencies (may need ACCOUNT_USAGE access)")
     
     connector.disconnect()
     print("\n✓ Analysis complete!")

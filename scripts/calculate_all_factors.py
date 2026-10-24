@@ -8,7 +8,7 @@ import pandas as pd
 sys.path.insert(0, '.')
 
 from src.config import Config
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.data.data_loader import DataLoader
 from src.factors.registry import FactorRegistry
 
@@ -83,9 +83,8 @@ def main():
     print(f"Symbols: {', '.join(symbols)}")
     print(f"Registered Factors: {', '.join(FactorRegistry.list_factors())}")
     
-    # Connect to Snowflake
-    snowflake_config = config.get_snowflake_config()
-    connector = SnowflakeConnector(snowflake_config)
+    # Connect to the local database
+    connector = DatabaseConnector(config)
     connector.connect()
     loader = DataLoader(connector)
     

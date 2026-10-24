@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, '.')
 
 from src.config import Config
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.data.data_loader import DataLoader
 from src.factors.technical import RSI14
 import pandas as pd
@@ -25,8 +25,7 @@ def main():
     
     # Initialize connection
     config = Config()
-    snowflake_config = config.get_snowflake_config()
-    connector = SnowflakeConnector(snowflake_config)
+    connector = DatabaseConnector(config)
     connector.connect()
     loader = DataLoader(connector)
     

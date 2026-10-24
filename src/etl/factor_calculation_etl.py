@@ -4,13 +4,13 @@ Inherits from BaseETL to calculate equity factors and load to fact tables
 """
 
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import numpy as np
 from loguru import logger
 
 from src.etl.base_etl import BaseETL
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.data.data_loader import DataLoader
 from src.factors.registry import FactorRegistry
 from src.config import Config
@@ -31,13 +31,12 @@ class FactorCalculationETL(BaseETL):
         Args:
             config: Application configuration object
         """
-        snowflake_config = config.get_snowflake_config()
-        snowflake_connector = SnowflakeConnector(snowflake_config)
-        snowflake_connector.connect()  # Ensure connection is established
+        database_connector = DatabaseConnector(config)
+        database_connector.initialize_schema()  # Ensure connection is established
         
         super().__init__(
-            job_name="factor_calculation_etl_v2",
-            snowflake_connector=snowflake_connector,
+            job_name="factor_calculation_etl",
+            database_connector=database_connector,
             fmp_client=None,  # Not needed for factors
             batch_size=config.batch_size or 1000,
             max_retries=3,
@@ -46,8 +45,8 @@ class FactorCalculationETL(BaseETL):
         )
         
         self.config = config
-        self.data_loader = DataLoader(snowflake_connector)
-        self.calculation_date = None
+        self.data_loader = DataLoader(database_connector)
+        self.calculation_dates = []  # List of dates to process
         self.symbols = None
         
         # Cache for dimension lookups
@@ -75,17 +74,31 @@ class FactorCalculationETL(BaseETL):
         if not start_date:
             start_date = end_date  # Single day by default
             
-        self.calculation_date = end_date
+        # Get all dates in range for calculations
+        dates_query = """
+        SELECT DISTINCT date
+        FROM ANALYTICS.DIM_DATE d
+        WHERE EXISTS (
+            SELECT 1 FROM ANALYTICS.FACT_DAILY_PRICES p
+            WHERE p.date_key = d.date_key
+        ) AND date BETWEEN %(start_date)s AND %(end_date)s
+        ORDER BY date
+        """
+        date_results = self.database.fetch_all(dates_query, {'start_date': start_date, 'end_date': end_date})
+        self.calculation_dates = [str(row['DATE']) for row in date_results]
         
         # Get symbols if not provided
         if not symbols:
             symbols = self._get_active_symbols(end_date)
+        if not symbols:
+            raise ValueError("No companies loaded. Import local source data before running factors.")
         self.symbols = symbols
         
-        logger.info(f"Extracting data for {len(symbols)} symbols from {start_date} to {end_date}")
-        
-        # Load dimension keys for the symbols and date
-        self._load_dimension_keys(symbols, end_date)
+        logger.info(f"Extracting data for {len(symbols)} symbols for {len(self.calculation_dates)} dates "
+                   f"({start_date} to {end_date})")
+
+        # Load dimension keys for the symbols and date range
+        self._load_dimension_keys(symbols, start_date, end_date)
         
         # Store metadata
         self.result.metadata['symbols'] = symbols
@@ -97,9 +110,7 @@ class FactorCalculationETL(BaseETL):
         logger.info(f"Using lookback of {max_lookback_calendar_days} calendar days to ensure sufficient trading days")
         
         # Calculate start date for lookback period
-        from datetime import datetime, timedelta
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-        start_date_obj = end_date_obj - timedelta(days=max_lookback_calendar_days)
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=max_lookback_calendar_days)
         lookback_start_date = start_date_obj.strftime("%Y-%m-%d")
         
         # Load price data with lookback using existing method
@@ -115,10 +126,11 @@ class FactorCalculationETL(BaseETL):
             as_of_date=end_date
         )
         
-        # Load market metrics for convenience
+        # Load market metrics for date range
         market_data = self.data_loader.load_market_metrics(
             symbols=symbols,
-            date=end_date
+            start_date=start_date,
+            end_date=end_date
         )
         
         logger.info(f"Extracted {len(price_data)} price records, "
@@ -150,81 +162,89 @@ class FactorCalculationETL(BaseETL):
         
         # Get all registered factors
         all_factors = FactorRegistry.list_factors()
-        logger.info(f"Calculating {len(all_factors)} factors")
-        
-        for factor_name in all_factors:
-            try:
-                # Get factor instance
-                factor_class = FactorRegistry.get(factor_name)
-                factor = factor_class()
-                
-                logger.info(f"Calculating {factor_name} ({factor.category})")
-                
-                # Select appropriate data based on factor category
-                if factor.category in ['momentum', 'technical']:
-                    data = price_data
-                elif factor.category == 'value':
-                    # For book_to_market, we can use market metrics directly
-                    if factor_name == 'book_to_market':
-                        data = market_data
-                    else:
-                        data = fundamental_data
-                else:
-                    # Default to fundamental data
-                    data = fundamental_data
-                
-                # Calculate factor values
-                factor_values, diagnostics = factor.calculate_with_diagnostics(data)
-                
-                # Store diagnostics
-                factor_stats[factor_name] = {
-                    'calculated': len(factor_values),
-                    'nulls': diagnostics['null_count'],
-                    'infs': diagnostics['inf_count'],
-                    'mean': diagnostics['mean'],
-                    'std': diagnostics['std']
-                }
-                
-                # Get factor key
-                factor_key = self._factor_key_cache.get(factor_name)
-                if not factor_key:
-                    logger.warning(f"No factor key found for {factor_name}")
-                    continue
-                
-                # Convert to records (fact table only, no more staging)
-                for symbol, value in factor_values.items():
-                    if pd.notna(value) and not np.isinf(value):
-                        company_key = self._company_key_cache.get(symbol)
-                        date_key = self._date_key_cache.get(self.calculation_date)
-                        
-                        if company_key and date_key:
-                            fact_raw_records.append({
-                                'company_key': company_key,
-                                'date_key': date_key,
-                                'factor_key': factor_key,
-                                'factor_value': float(value)
-                            })
+        logger.info(f"Calculating {len(all_factors)} factors for {len(self.calculation_dates)} dates")
+
+        # Process each date
+        for calculation_date in self.calculation_dates:
+            logger.info(f"Processing date: {calculation_date}")
+
+            for factor_name in all_factors:
+                try:
+                    # Get factor instance
+                    factor_class = FactorRegistry.get(factor_name)
+                    factor = factor_class()
+
+                    # Select appropriate data based on factor category
+                    if factor.category in ['momentum', 'technical']:
+                        data = price_data
+                    elif factor.category == 'value':
+                        # For book_to_market, we can use market metrics directly
+                        if factor_name == 'book_to_market':
+                            data = market_data
                         else:
-                            logger.warning(f"Missing dimension keys for {symbol} on {self.calculation_date}")
-                
-                logger.info(f"Calculated {factor_name}: "
-                           f"{len(factor_values)} values, "
-                           f"{diagnostics['null_count']} nulls, "
-                           f"{diagnostics['inf_count']} infs")
-                
-            except Exception as e:
-                error_msg = f"Failed to calculate {factor_name}: {str(e)}"
-                logger.error(error_msg)
-                self.result.errors.append(error_msg)
-                
-                # Store error in stats
-                factor_stats[factor_name] = {
-                    'calculated': 0,
-                    'error': str(e)
-                }
-                
-                # Continue with other factors (graceful failure)
-                continue
+                            data = fundamental_data
+                    else:
+                        # Default to fundamental data
+                        data = fundamental_data
+
+                    if factor.category in ['momentum', 'technical']:
+                        day = datetime.strptime(calculation_date, "%Y-%m-%d").date()
+                        observed = set(data.loc[data['date'] == day, 'symbol']) if not data.empty else set()
+                        data = data[data['symbol'].isin(observed)] if not data.empty else data
+                    if data.empty:
+                        logger.warning(f"No input data for {factor_name} on {calculation_date}")
+                        continue
+
+                    # Calculate factor values for this specific date
+                    factor_values, diagnostics = factor.calculate_with_diagnostics(data, calculation_date)
+
+                    # Update cumulative diagnostics
+                    if factor_name not in factor_stats:
+                        factor_stats[factor_name] = {
+                            'dates_calculated': 0,
+                            'total_values': 0,
+                            'total_nulls': 0,
+                            'total_infs': 0
+                        }
+
+                    factor_stats[factor_name]['dates_calculated'] += 1
+                    factor_stats[factor_name]['total_values'] += len(factor_values)
+                    factor_stats[factor_name]['total_nulls'] += diagnostics['null_count']
+                    factor_stats[factor_name]['total_infs'] += diagnostics['inf_count']
+
+                    # Get factor key
+                    factor_key = self._factor_key_cache.get(factor_name)
+                    if not factor_key:
+                        logger.warning(f"No factor key found for {factor_name}")
+                        continue
+
+                    # Convert to records (fact table only, no more staging)
+                    for symbol, value in factor_values.items():
+                        if pd.notna(value) and not np.isinf(value):
+                            company_key = self._company_key_cache.get(symbol)
+                            date_key = self._date_key_cache.get(calculation_date)
+
+                            if company_key and date_key:
+                                fact_raw_records.append({
+                                    'company_key': company_key,
+                                    'date_key': date_key,
+                                    'factor_key': factor_key,
+                                    'factor_value': float(value)
+                                })
+                            else:
+                                logger.warning(f"Missing dimension keys for {symbol} on {calculation_date}")
+
+                    logger.debug(f"Date {calculation_date} - {factor_name}: "
+                               f"{len(factor_values)} values, "
+                               f"{diagnostics['null_count']} nulls")
+
+                except Exception as e:
+                    error_msg = f"Failed to calculate {factor_name} for {calculation_date}: {str(e)}"
+                    logger.error(error_msg)
+                    self.result.errors.append(error_msg)
+
+                    # Continue with other factors (graceful failure)
+                    continue
         
         # Store factor statistics in metadata
         self.result.metadata['factor_stats'] = factor_stats
@@ -267,7 +287,7 @@ class FactorCalculationETL(BaseETL):
             merge_keys = ['company_key', 'date_key', 'factor_key']
             update_columns = ['factor_value', 'calculation_timestamp']
             
-            records_merged = self.snowflake.merge(
+            records_merged = self.database.merge(
                 table="ANALYTICS.FACT_FACTOR_RAW",
                 data=fact_data,
                 merge_keys=merge_keys,
@@ -297,7 +317,8 @@ class FactorCalculationETL(BaseETL):
         Returns:
             Result dictionary with status and statistics
         """
-        logger.info(f"Starting factor calculation ETL")
+        self.reset_result()
+        logger.info("Starting factor calculation ETL")
         
         try:
             # Support single date or date range
@@ -345,8 +366,8 @@ class FactorCalculationETL(BaseETL):
             duration = (self.result.end_time - self.result.start_time).total_seconds()
             logger.info(f"ETL completed in {duration:.2f} seconds with status: {self.result.status}")
     
-    def _load_dimension_keys(self, symbols: List[str], date: str):
-        """Load dimension keys for symbols and date"""
+    def _load_dimension_keys(self, symbols: List[str], start_date: str, end_date: str):
+        """Load dimension keys for symbols and date range"""
         # Load company keys
         query = """
         SELECT symbol, company_key 
@@ -361,18 +382,17 @@ class FactorCalculationETL(BaseETL):
         for i, symbol in enumerate(symbols):
             params[f'symbol_{i}'] = symbol
         
-        results = self.snowflake.fetch_all(query, params)
+        results = self.database.fetch_all(query, params)
         self._company_key_cache = {row['SYMBOL']: row['COMPANY_KEY'] for row in results}
         
-        # Load date key
+        # Load date keys for the range
         date_query = """
         SELECT date, date_key 
         FROM ANALYTICS.DIM_DATE 
-        WHERE date = %(date)s
+        WHERE date BETWEEN %(start_date)s AND %(end_date)s
         """
-        results = self.snowflake.fetch_all(date_query, {'date': date})
-        if results:
-            self._date_key_cache[date] = results[0]['DATE_KEY']
+        results = self.database.fetch_all(date_query, {'start_date': start_date, 'end_date': end_date})
+        self._date_key_cache = {str(row['DATE']): row['DATE_KEY'] for row in results}
         
         # Load factor keys
         factor_query = """
@@ -380,11 +400,11 @@ class FactorCalculationETL(BaseETL):
         FROM ANALYTICS.DIM_FACTOR 
         WHERE is_active = TRUE
         """
-        results = self.snowflake.fetch_all(factor_query)
+        results = self.database.fetch_all(factor_query)
         self._factor_key_cache = {row['FACTOR_NAME']: row['FACTOR_KEY'] for row in results}
         
         logger.info(f"Loaded dimension keys: {len(self._company_key_cache)} companies, "
-                   f"1 date, {len(self._factor_key_cache)} factors")
+                   f"{len(self._date_key_cache)} dates, {len(self._factor_key_cache)} factors")
     
     def _get_active_symbols(self, as_of_date: str) -> List[str]:
         """Get list of active symbols to process"""
@@ -395,7 +415,7 @@ class FactorCalculationETL(BaseETL):
         ORDER BY symbol
         """
         
-        result = self.snowflake.fetch_all(query)
+        result = self.database.fetch_all(query)
         symbols = [row['SYMBOL'] for row in result]
         
         logger.info(f"Found {len(symbols)} active symbols")
@@ -427,24 +447,27 @@ class FactorCalculationETL(BaseETL):
         factor_stats = self.result.metadata.get('factor_stats', {})
         
         log_entries = []
+        # Log summary for the entire batch
+        batch_end_date = self.calculation_dates[-1] if self.calculation_dates else None
+
         for factor_name, stats in factor_stats.items():
             log_entry = {
-                'calculation_date': self.calculation_date,
+                'calculation_date': batch_end_date,  # Use last date as reference
                 'factor_name': factor_name,
                 'symbols_processed': len(self.symbols) if self.symbols else 0,
-                'records_calculated': stats.get('calculated', 0),
-                'null_count': stats.get('nulls', 0),
-                'inf_count': stats.get('infs', 0),
+                'records_calculated': stats.get('total_values', 0),
+                'null_count': stats.get('total_nulls', 0),
+                'inf_count': stats.get('total_infs', 0),
                 'calculation_time_seconds': 0,  # Would need per-factor timing
-                'status': 'ERROR' if 'error' in stats else 'SUCCESS',
-                'error_message': stats.get('error'),
+                'status': 'SUCCESS' if stats.get('dates_calculated', 0) > 0 else 'ERROR',
+                'error_message': f"Processed {stats.get('dates_calculated', 0)} dates",
                 'created_timestamp': datetime.now(timezone.utc)
             }
             log_entries.append(log_entry)
         
         if log_entries:
             try:
-                self.snowflake.bulk_insert(
+                self.database.bulk_insert(
                     "ANALYTICS.FACTOR_CALCULATION_LOG", 
                     log_entries
                 )

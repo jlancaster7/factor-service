@@ -1,47 +1,31 @@
-"""Simple configuration management using environment variables."""
-import os
-from dataclasses import dataclass
-from dotenv import load_dotenv
-from .utils.config import SnowflakeConfig
+"""Local database and application configuration."""
 
-# Load environment variables from .env file
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
 load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass
 class Config:
-    """Simple configuration using environment variables."""
-    
-    # Application settings
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    batch_size: int = int(os.getenv("BATCH_SIZE", "1000"))
-    
-    # For backward compatibility
-    snowflake_account: str = os.getenv("SNOWFLAKE_ACCOUNT", "")
-    snowflake_user: str = os.getenv("SNOWFLAKE_USER", "")
-    snowflake_password: str = os.getenv("SNOWFLAKE_PASSWORD", "")
-    snowflake_warehouse: str = os.getenv("SNOWFLAKE_WAREHOUSE", "")
-    snowflake_database: str = os.getenv("SNOWFLAKE_DATABASE", "")
-    snowflake_schema: str = os.getenv("SNOWFLAKE_SCHEMA", "ANALYTICS")
-    
-    def get_snowflake_config(self) -> SnowflakeConfig:
-        """Get SnowflakeConfig instance for the data service connector."""
-        return SnowflakeConfig.from_env()
-    
-    def validate(self):
-        """Ensure required config is present."""
-        # Delegate to SnowflakeConfig validation
-        snowflake_config = self.get_snowflake_config()
-        snowflake_config.validate()
-    
-    def __repr__(self):
-        """Safe representation without sensitive data."""
-        return (
-            f"Config("
-            f"snowflake_account={self.snowflake_account}, "
-            f"snowflake_user={self.snowflake_user}, "
-            f"snowflake_warehouse={self.snowflake_warehouse}, "
-            f"snowflake_database={self.snowflake_database}, "
-            f"snowflake_schema={self.snowflake_schema}, "
-            f"log_level={self.log_level})"
+    """Environment defaults are read when a configuration is created."""
+
+    database_path: str = field(
+        default_factory=lambda: os.getenv(
+            "DATABASE_PATH", str(PROJECT_ROOT / "data" / "equity_factors.duckdb")
         )
+    )
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    batch_size: int = field(
+        default_factory=lambda: int(os.getenv("BATCH_SIZE", "1000"))
+    )
+
+    def validate(self):
+        if not self.database_path.strip():
+            raise ValueError("DATABASE_PATH must not be empty")
+        if self.batch_size <= 0:
+            raise ValueError("BATCH_SIZE must be positive")

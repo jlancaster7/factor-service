@@ -10,7 +10,7 @@ from enum import Enum
 import time
 from loguru import logger
 
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.validation.factor_validator import FactorDataValidator as DataQualityValidator
 
 
@@ -67,7 +67,7 @@ class BaseETL(ABC):
     def __init__(
         self,
         job_name: str,
-        snowflake_connector: SnowflakeConnector,
+        database_connector: DatabaseConnector,
         fmp_client: Optional[Any] = None,  # Made optional for factor ETL
         batch_size: int = 1000,
         max_retries: int = 3,
@@ -79,7 +79,7 @@ class BaseETL(ABC):
 
         Args:
             job_name: Name of the ETL job
-            snowflake_connector: Snowflake database connector
+            database_connector: Local database connector
             fmp_client: FMP API client
             batch_size: Size of batches for processing
             max_retries: Maximum number of retries for failed operations
@@ -87,7 +87,7 @@ class BaseETL(ABC):
             enable_monitoring: Whether to persist job results to monitoring tables
         """
         self.job_name = job_name
-        self.snowflake = snowflake_connector
+        self.database = database_connector
         self.fmp_client = fmp_client  # Can be None for factor ETL
         self.transformer = None  # Not needed for factor ETL
         self.validator = DataQualityValidator()
@@ -101,7 +101,7 @@ class BaseETL(ABC):
         if self.enable_monitoring:
             try:
                 from src.etl.etl_monitor import ETLMonitor
-                self.monitor = ETLMonitor(snowflake_connector)
+                self.monitor = ETLMonitor(database_connector)
             except ImportError:
                 logger.warning("ETLMonitor not available, disabling monitoring")
                 self.enable_monitoring = False
@@ -126,6 +126,24 @@ class BaseETL(ABC):
             errors=[],
             metadata={},
         )
+
+    def reset_result(self):
+        """Start each run with fresh counters, errors, and timing."""
+        self.result = ETLResult(
+            job_name=self.job_name, status=ETLStatus.PENDING,
+            start_time=datetime.now(timezone.utc), end_time=None,
+            records_extracted=0, records_transformed=0, records_loaded=0,
+            errors=[], metadata={},
+        )
+
+    def close(self):
+        self.database.disconnect()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     @abstractmethod
     def extract(self) -> List[Dict[str, Any]]:

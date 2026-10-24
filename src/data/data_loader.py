@@ -1,16 +1,16 @@
-"""Data loading utilities that convert Snowflake results to DataFrames."""
+"""Data loading utilities that convert database results to DataFrames."""
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
 from loguru import logger
 
-from .snowflake_connector import SnowflakeConnector
+from .database import DatabaseConnector
 
 
 class DataLoader:
-    """Helper class to load data from Snowflake and convert to DataFrames."""
-    
-    def __init__(self, connector: SnowflakeConnector):
+    """Helper class to load data from the database and convert to DataFrames."""
+
+    def __init__(self, connector: DatabaseConnector):
         """Initialize with a Snowflake connector."""
         self.connector = connector
     
@@ -149,18 +149,31 @@ class DataLoader:
         
         return self.query_to_dataframe(query, params)
     
-    def load_market_metrics(self, symbols: List[str], date: str) -> pd.DataFrame:
+    def load_market_metrics(self, symbols: List[str], date: str = None,
+                           start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """
-        Load market metrics data for given symbols on a specific date.
+        Load market metrics data for given symbols on specific date(s).
         
         Args:
             symbols: List of stock symbols
-            date: Date to load metrics for (YYYY-MM-DD)
+            date: Single date to load metrics for (YYYY-MM-DD)
+            start_date: Start date for range (YYYY-MM-DD)
+            end_date: End date for range (YYYY-MM-DD)
             
         Returns:
             DataFrame with market metrics including P/B ratio
         """
-        query = """
+        # Handle single date vs date range
+        if date:
+            date_condition = "AND d.date = %(date)s"
+            params = {'date': date}
+        elif start_date and end_date:
+            date_condition = "AND d.date BETWEEN %(start_date)s AND %(end_date)s"
+            params = {'start_date': start_date, 'end_date': end_date}
+        else:
+            raise ValueError("Must provide either 'date' or both 'start_date' and 'end_date'")
+
+        query = f"""
         SELECT 
             c.symbol,
             d.date,
@@ -178,17 +191,16 @@ class DataLoader:
         FROM ANALYTICS.FACT_MARKET_METRICS m
         JOIN ANALYTICS.DIM_COMPANY c ON m.company_key = c.company_key
         JOIN ANALYTICS.DIM_DATE d ON m.date_key = d.date_key
-        WHERE c.symbol IN ({placeholders})
-          AND d.date = %(date)s
-        ORDER BY c.symbol
+        WHERE c.symbol IN ({{placeholders}})
+          {date_condition}
+        ORDER BY c.symbol, d.date
         """
         
         # Create placeholders for IN clause
         placeholders = ','.join([f"%(symbol_{i})s" for i in range(len(symbols))])
         query = query.format(placeholders=placeholders)
         
-        # Build parameters
-        params = {'date': date}
+        # Add symbol parameters
         for i, symbol in enumerate(symbols):
             params[f'symbol_{i}'] = symbol
         

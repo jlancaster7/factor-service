@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Check what data is available in Snowflake for our test companies."""
+"""Check what data is available locally for our test companies."""
 import sys
 import logging
 from datetime import datetime
@@ -7,7 +7,7 @@ from datetime import datetime
 sys.path.insert(0, '.')
 
 from src.config import Config
-from src.data.snowflake_connector import SnowflakeConnector
+from src.data.database import DatabaseConnector
 from src.data.data_loader import DataLoader
 
 
@@ -22,8 +22,7 @@ def main():
     
     # Load config
     config = Config()
-    snowflake_config = config.get_snowflake_config()
-    connector = SnowflakeConnector(snowflake_config)
+    connector = DatabaseConnector(config)
     
     # Connect and create data loader
     connector.connect()
