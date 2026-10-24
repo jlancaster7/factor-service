@@ -25,16 +25,24 @@ class Momentum12_1(BaseFactor):
         self.lookback_days = 252  # ~12 months of trading days
         self.skip_days = 21      # ~1 month of trading days
     
-    def calculate(self, data: pd.DataFrame) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, calculation_date: str = None) -> pd.Series:
         """Calculate 12-1 momentum for each symbol.
         
         Args:
             data: DataFrame with columns [symbol, date, adj_close]
+            calculation_date: Optional specific date to calculate momentum for
             
         Returns:
             Series indexed by symbol with momentum values
         """
         self.validate_data(data)
+        
+        # If calculation_date provided, filter data up to that date
+        if calculation_date:
+            # Convert string date to datetime.date for comparison
+            from datetime import datetime
+            calc_date = datetime.strptime(calculation_date, "%Y-%m-%d").date()
+            data = data[data['date'] <= calc_date].copy()
         
         results = {}
         

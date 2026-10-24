@@ -19,7 +19,7 @@ class TestFactor(BaseFactor):
     def __init__(self):
         super().__init__(name="test_factor", category="test")
     
-    def calculate(self, data: pd.DataFrame) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, calculation_date=None) -> pd.Series:
         """Simple calculation: return closing price."""
         self.validate_data(data)
         

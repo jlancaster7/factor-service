@@ -25,7 +25,7 @@ class BookToMarket(BaseFactor):
     def __init__(self):
         super().__init__(name="book_to_market", category="value")
     
-    def calculate(self, data: pd.DataFrame) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, calculation_date: str = None) -> pd.Series:
         """Calculate book-to-market ratio for each symbol.
         
         Book-to-Market = 1 / Price-to-Book
@@ -33,11 +33,19 @@ class BookToMarket(BaseFactor):
         Args:
             data: DataFrame with columns [symbol, date, pb_ratio]
                   From FACT_MARKET_METRICS table
+            calculation_date: Optional specific date to calculate B/M for
             
         Returns:
             Series indexed by symbol with B/M values
         """
         self.validate_data(data)
+        
+        # If calculation_date provided, filter to that specific date
+        if calculation_date:
+            # Convert string date to datetime.date for comparison
+            from datetime import datetime
+            calc_date = datetime.strptime(calculation_date, "%Y-%m-%d").date()
+            data = data[data['date'] == calc_date].copy()
         
         results = {}
         

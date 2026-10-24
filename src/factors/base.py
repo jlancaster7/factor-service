@@ -23,11 +23,13 @@ class BaseFactor(ABC):
         logger.info(f"Initialized factor: {name} (category: {category})")
     
     @abstractmethod
-    def calculate(self, data: pd.DataFrame) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, calculation_date: str = None) -> pd.Series:
         """Calculate factor values for all securities in the DataFrame.
         
         Args:
             data: DataFrame with required columns for calculation
+            calculation_date: Optional specific date to calculate factors for (YYYY-MM-DD).
+                            If None, uses the most recent date in the data.
             
         Returns:
             Series indexed by symbol with factor values
@@ -53,11 +55,12 @@ class BaseFactor(ABC):
         if missing:
             raise ValueError(f"Missing required columns for {self.name}: {missing}")
     
-    def calculate_with_diagnostics(self, data: pd.DataFrame) -> Tuple[pd.Series, Dict]:
+    def calculate_with_diagnostics(self, data: pd.DataFrame, calculation_date: str = None) -> Tuple[pd.Series, Dict]:
         """Calculate factor with diagnostic information.
         
         Args:
             data: DataFrame with required columns for calculation
+            calculation_date: Optional specific date to calculate factors for (YYYY-MM-DD)
             
         Returns:
             Tuple of (factor_values, diagnostics_dict)
@@ -66,7 +69,7 @@ class BaseFactor(ABC):
         self.validate_data(data)
         
         # Calculate factor values
-        values = self.calculate(data)
+        values = self.calculate(data, calculation_date)
         
         # Generate diagnostics
         diagnostics = {

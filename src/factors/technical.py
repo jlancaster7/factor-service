@@ -28,16 +28,24 @@ class RSI14(BaseFactor):
         super().__init__(name="rsi_14", category="technical")
         self.period = 14  # Standard RSI period
     
-    def calculate(self, data: pd.DataFrame) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, calculation_date: str = None) -> pd.Series:
         """Calculate 14-day RSI for each symbol.
         
         Args:
             data: DataFrame with columns [symbol, date, adj_close]
+            calculation_date: Optional specific date to calculate RSI for
             
         Returns:
             Series indexed by symbol with RSI values
         """
         self.validate_data(data)
+        
+        # If calculation_date provided, filter data up to that date
+        if calculation_date:
+            # Convert string date to datetime.date for comparison
+            from datetime import datetime
+            calc_date = datetime.strptime(calculation_date, "%Y-%m-%d").date()
+            data = data[data['date'] <= calc_date].copy()
         
         results = {}
         
